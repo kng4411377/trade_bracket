@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bracket Manager — Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 24px; background:#0b0d12; color:#e6e8f0; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:16px; }
+    .card { background:#141824; border:1px solid #1f2636; border-radius:14px; padding:16px; box-shadow: 0 8px 20px rgba(0,0,0,0.25); }
+    .sym { font-size:20px; font-weight:700; letter-spacing:0.5px; }
+    .muted { color:#98a2b3; font-size:12px; }
+    .row { display:flex; justify-content:space-between; margin:6px 0; }
+    .pos { color:#20c997; } .neg { color:#ff6b6b; }
+    a { color:#9dd1ff; text-decoration: none; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid #2a3348; }
+    .footer { margin-top: 16px; font-size: 12px; color: #9aa4b2; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dashboard</h1>
+    <nav>
+      <a href="/trades.html">Trades</a>
+    </nav>
+  </header>
+
+  <div id="cards" class="grid"></div>
+
+  <div class="footer">
+    Data: <code>/api/mtm</code>, refreshes every 10s.
+  </div>
+
+  <script type="module">
+    const el = sel => document.querySelector(sel);
+    const fmt = (n, d=2) => Number(n).toFixed(d);
+    const fmtUsd = n => (n>=0?'+':'') + '$' + fmt(n,2);
+
+    const render = (payload) => {
+      const { data } = payload;
+      const html = Object.keys(data).sort().map(sym => {
+  const r = data[sym];
+  const unreal = Number(r.unreal_pnl || 0);
+  const realized = Number(r.realized_pnl || 0);
+  const total = Number(r.total_pnl || (unreal + realized));
+  const clsU = unreal >= 0 ? 'pos' : 'neg';
+  const clsR = realized >= 0 ? 'pos' : 'neg';
+  const clsT = total >= 0 ? 'pos' : 'neg';
+  return `
+    <div class="card" data-sym="${sym}">
+      <div class="row"><div class="sym">${sym}</div><div class="pill">${r.ts?.slice(11,19) ?? ''} ET</div></div>
+      <div class="row"><span class="muted">Price</span><strong>$${fmt(r.price)}</strong></div>
+      <div class="row"><span class="muted">Qty</span><span>${fmt(r.qty,0)}</span></div>
+      <div class="row"><span class="muted">Avg Cost</span><span>$${fmt(r.avg_cost)}</span></div>
+      <div class="row" style="margin-top:8px;">
+        <canvas id="spark-${sym}" width="500" height="80" style="width:100%; height:80px;"></canvas>
+      </div>
+      <hr style="border:none;border-top:1px solid #1f2636; margin:10px 0;">
+      <div class="row"><span class="muted">Unrealized</span><span class="${clsU}">${fmtUsd(unreal)}</span></div>
+      <div class="row"><span class="muted">Realized</span><span class="${clsR}">${fmtUsd(realized)}</span></div>
+      <div class="row"><span class="muted">Total P/L</span><span class="${clsT}"><strong>${fmtUsd(total)}</strong></span></div>
+    </div>
+  `;
+}).join('');
+      el('#cards').innerHTML = html || `<div class="muted">No MTM data yet. Wait for the next poll tick.</div>`;
+    };
+
+   const load = async () => {
+  try {
+    const res = await fetch('/api/mtm');
+    const j = await res.json();
+    render(j);
+    const symbols = Object.keys(j.data || {});
+    if (symbols.length) await loadSeriesAndDraw(symbols);
+  } catch (e) { console.error(e); }
+};
+
+    load();
+    setInterval(load, 10000);
+    const drawSpark = (canvas, series) => {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  if (!series.length) return;
+
+  // y-domain from series.unreal_pnl (fallback to price if unreal missing)
+  const values = series.map(p => Number.isFinite(p.unreal_pnl) ? p.unreal_pnl : p.price);
+  const min = Math.min(...values), max = Math.max(...values);
+  const pad = (max - min) * 0.1 || 1;
+  const yMin = min - pad, yMax = max + pad;
+
+  const xStep = W / Math.max(1, series.length - 1);
+  const yScale = v => H - ((v - yMin) / (yMax - yMin)) * H;
+
+  // baseline at 0 for P/L (if in range)
+  if (yMin < 0 && yMax > 0) {
+    const y0 = yScale(0);
+    ctx.beginPath();
+    ctx.moveTo(0, y0);
+    ctx.lineTo(W, y0);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#2a3348';
+    ctx.stroke();
+  }
+
+  // line
+  ctx.beginPath();
+  series.forEach((pt, i) => {
+    const x = i * xStep;
+    const y = yScale(values[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.lineWidth = 2;
+  // green if last >= first, red otherwise
+  ctx.strokeStyle = values[values.length-1] >= values[0] ? '#20c997' : '#ff6b6b';
+  ctx.stroke();
+};
+
+const loadSeriesAndDraw = async (symbols) => {
+  // draw each symbol sparkline
+  await Promise.all(symbols.map(async sym => {
+    try {
+      const res = await fetch(`/api/mtm_series?symbol=${encodeURIComponent(sym)}&limit=200`);
+      const { data } = await res.json();
+      const canvas = document.getElementById(`spark-${sym}`);
+      if (canvas) drawSpark(canvas, data);
+    } catch (e) { /* ignore */ }
+  }));
+};
+  </script>
+</body>
+</html>

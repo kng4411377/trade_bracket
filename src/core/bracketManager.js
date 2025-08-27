@@ -1,0 +1,147 @@
+import { cfg } from '../config.js';
+import { consoleLog, fileLog, appendCsv, f6, bucket, session } from '../utils/logging.js';
+import { withBackoff } from '../utils/backoff.js';
+import { isMarketOpenNow, minutesToCloseET } from '../utils/time.js';
+import * as RH from '../services/robinhood.js';
+import { overridesFor, computeExits } from './overrides.js';
+
+const state = new Map(); // symbol -> { closed, reason, maxPrice }
+
+const markClosed = (symbol, reason) => {
+  const s = state.get(symbol) || {};
+  state.set(symbol, { ...s, closed: true, reason, ts: Date.now() });
+};
+const isClosed = symbol => !!(state.get(symbol)?.closed);
+const updateMax = (symbol, price) => {
+  const s = state.get(symbol) || {};
+  const maxPrice = Math.max(s.maxPrice || -Infinity, price);
+  state.set(symbol, { ...s, maxPrice });
+  return maxPrice;
+};
+
+const applySlippage = price =>
+  (!isFinite(cfg.dryRunSlippageBps) || cfg.dryRunSlippageBps <= 0)
+    ? price
+    : price * (1 - cfg.dryRunSlippageBps / 10000);
+
+const logDryRunExit = ({ symbol, qty, rawFill, avgCost, reason }) => {
+  const fill = applySlippage(rawFill);
+  const fee = cfg.dryRunFee;
+  const pnl = (fill - avgCost) * qty - fee;
+  const b = bucket(symbol);
+  b.cumPnL += pnl; b.trades += 1;
+
+  const payload = { session, symbol, qty, rawFill, fill, avgCost, fee, reason, realizedPnL: +pnl.toFixed(4), cumPnL: +b.cumPnL.toFixed(4) };
+  consoleLog.info(payload, '[DRY RUN] EXIT simulated');
+  fileLog.info(payload, '[DRY RUN] EXIT simulated');
+
+  appendCsv(cfg.files.tradesCsv, [
+    new Date().toISOString(), session, symbol, 'sell', f6(qty),
+    f6(fill), f6(avgCost), f6(cfg.dryRunSlippageBps), f6(fee), reason, 'DRY_RUN', f6(pnl), f6(b.cumPnL)
+  ]);
+};
+
+const cancelStaleOpenOrders = async symbol => {
+  const open = await withBackoff(() => RH.getOpenStockOrders(), 'openOrders');
+  const list = open.filter(o => (o.symbol === symbol) || (o.instrument && o.instrument.includes('/instruments/')));
+  let n = 0;
+  for (const o of list) {
+    try { await RH.cancelOrder(o, cfg.dryRun, { consoleLog, fileLog }); n++; }
+    catch { /* ignore */ }
+  }
+  return n;
+};
+
+export const handleTicker = async t => {
+  const { symbol, qty, target, stop, timeInForce='gfd', trailPct } = t;
+  if (isClosed(symbol)) return;
+  if (cfg.marketHoursOnly && !isMarketOpenNow()) return;
+
+  try {
+    const price = await withBackoff(() => RH.getQuote(symbol), `quote:${symbol}`);
+    const { qty: held, avgCost } = await RH.qtyAndAvgCost(symbol);
+
+    if (held > 0) {
+      appendCsv(cfg.files.mtmCsv, [
+        new Date().toISOString(), session, symbol, f6(price), f6(held), f6(avgCost), f6((price - avgCost) * held)
+      ]);
+    }
+
+    // EOD closeout
+    const ovr = overridesFor(symbol);
+    const eodEnabled = (ovr.eodClose ?? cfg.eodCloseEnabled);
+    const eodCutoff = (ovr.eodCutoffMin ?? cfg.eodCutoffMin);
+    const eodPct = (ovr.eodClosePct ?? cfg.eodClosePartialPct);
+    const m2c = minutesToCloseET();
+
+    if (eodEnabled && m2c >= 0 && m2c <= eodCutoff && held > 0) {
+      const closeQty = Math.floor(held * (eodPct / 100));
+      if (closeQty > 0) {
+        try { await cancelStaleOpenOrders(symbol); } catch {}
+        if (cfg.dryRun) {
+          logDryRunExit({ symbol, qty: closeQty, rawFill: price, avgCost, reason: 'eod_closeout' });
+          if (closeQty === held) markClosed(symbol, 'eod_closeout');
+          return;
+        } else {
+          const res = await withBackoff(
+            () => RH.placeSellMarket({ symbol, qty: closeQty, tif: timeInForce }, false, { consoleLog, fileLog }),
+            `eodSell:${symbol}`
+          );
+          consoleLog.info({ symbol, closeQty, orderId: res.id }, 'EOD market sell placed');
+          fileLog.info({ symbol, closeQty, orderId: res.id }, 'EOD market sell placed');
+          if (closeQty === held) markClosed(symbol, 'eod_closeout');
+          return;
+        }
+      }
+    }
+
+    const maxP = updateMax(symbol, price);
+    const exits = computeExits({ symbol, baseTarget: target, baseStop: stop, avgCost, maxPrice: maxP, trailPct });
+
+    await cancelStaleOpenOrders(symbol);
+    if (held < qty) return;
+
+    if (price >= exits.target) {
+      if (cfg.dryRun) {
+        logDryRunExit({ symbol, qty, rawFill: exits.target, avgCost, reason: 'target_hit' });
+        markClosed(symbol, 'target_hit');
+      } else {
+        const res = await withBackoff(
+          () => RH.placeSellLimit({ symbol, qty, limitPrice: exits.target, tif: timeInForce }, false, { consoleLog, fileLog }),
+          `limitSell:${symbol}`
+        );
+        consoleLog.info({ symbol, target: exits.target, orderId: res.id }, 'Placed LIMIT sell');
+        fileLog.info({ symbol, target: exits.target, orderId: res.id }, 'Placed LIMIT sell');
+        markClosed(symbol, 'target_hit');
+      }
+      return;
+    }
+
+    if (price <= exits.stop) {
+      if (cfg.dryRun) {
+        logDryRunExit({ symbol, qty, rawFill: price, avgCost, reason: 'stop_hit' });
+        markClosed(symbol, 'stop_hit');
+      } else {
+        const res = await withBackoff(
+          () => RH.placeSellMarket({ symbol, qty, tif: timeInForce }, false, { consoleLog, fileLog }),
+          `marketSell:${symbol}`
+        );
+        consoleLog.info({ symbol, stop: exits.stop, orderId: res.id }, 'Placed MARKET sell');
+        fileLog.info({ symbol, stop: exits.stop, orderId: res.id }, 'Placed MARKET sell');
+        markClosed(symbol, 'stop_hit');
+      }
+      return;
+    }
+  } catch (err) {
+    consoleLog.error({ symbol, err: err.message }, 'Ticker loop error');
+    fileLog.error({ symbol, err: err.message }, 'Ticker loop error');
+  }
+};
+
+export const startManager = tickers => {
+  // immediate tick
+  tickers.forEach(t => { void handleTicker(t); });
+  // schedule
+  const h = setInterval(() => tickers.forEach(t => { void handleTicker(t); }), cfg.pollMs);
+  return () => clearInterval(h); // returns a stop() fn
+};

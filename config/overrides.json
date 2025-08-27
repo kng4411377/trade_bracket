@@ -1,0 +1,15 @@
+{
+  "AAPL": {
+    "mode": "absolute",
+    "target": 192.5,
+    "stop": 178.2,
+    "eodClose": true,
+    "eodCutoffMin": 10,
+    "eodClosePct": 100
+  },
+  "MSFT": {
+    "mode": "percent",
+    "targetPct": 4.0,
+    "stopPct": 2.5
+  }
+}

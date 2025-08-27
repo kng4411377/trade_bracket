@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bracket Manager — Trades</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 24px; background:#0b0d12; color:#e6e8f0; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { padding:10px; border-bottom: 1px solid #1f2636; font-size: 14px; }
+    th { text-align:left; color:#9aa4b2; user-select:none; cursor:pointer; }
+    tr:hover { background:#101522; }
+    .pos { color:#20c997; } .neg { color:#ff6b6b; }
+    a { color:#9dd1ff; text-decoration: none; }
+    .controls { margin-bottom: 12px; display:flex; gap:8px; align-items:center; }
+    input[type="text"] { padding:8px 10px; border-radius:8px; border:1px solid #2a3348; background:#0f1320; color:#e6e8f0; }
+    select { padding:8px; border-radius:8px; border:1px solid #2a3348; background:#0f1320; color:#e6e8f0; }
+    button { padding:8px 12px; border-radius:8px; border:1px solid #2a3348; background:#0f1320; color:#e6e8f0; cursor:pointer; }
+    button:hover { background:#141a2b; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Trades</h1>
+    <nav><a href="/dashboard.html">Dashboard</a></nav>
+  </header>
+
+  <div class="controls">
+    <label>Symbol
+      <input id="q" type="text" placeholder="e.g. AAPL" />
+    </label>
+    <label>Show
+      <select id="limit">
+        <option>100</option><option selected>200</option><option>500</option><option>1000</option>
+      </select>
+    </label>
+    <button id="refresh">Refresh</button>
+    <a href="/var/trades.csv" download><button>Download CSV</button></a><button id="reset">Reset History</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-k="ts">Time</th>
+        <th data-k="symbol">Symbol</th>
+        <th>Side</th>
+        <th>Qty</th>
+        <th>Fill</th>
+        <th>Avg Cost</th>
+        <th>Reason</th>
+        <th>Mode</th>
+        <th data-k="realized_pnl">Realized P/L</th>
+        <th data-k="cum_pnl">Cum P/L</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script type="module">
+    const $ = s => document.querySelector(s);
+    let sortKey = 'ts', sortDir = 'desc';
+    let data = [];
+
+    const fmt = (n, d=2) => Number(n).toFixed(d);
+    const fmtUsd = n => (n>=0?'+':'') + '$' + fmt(n,2);
+
+    const fetchTrades = async () => {
+      const limit = Number($('#limit').value || 200);
+      const res = await fetch('/api/trades?limit=' + limit);
+      const j = await res.json();
+      data = j.data || [];
+      render();
+    };
+
+    const render = () => {
+      let view = data.slice();
+      const q = ($('#q').value || '').trim().toUpperCase();
+      if (q) view = view.filter(r => r.symbol.toUpperCase().includes(q));
+
+      view.sort((a,b) => {
+        const A = a[sortKey], B = b[sortKey];
+        if (A == B) return 0;
+        return (A > B ? 1 : -1) * (sortDir === 'asc' ? 1 : -1);
+      });
+
+      $('#rows').innerHTML = view.map(r => `
+        <tr>
+          <td>${r.ts.replace('T',' ').replace('Z','')}</td>
+          <td>${r.symbol}</td>
+          <td>${r.side}</td>
+          <td>${fmt(r.qty,0)}</td>
+          <td>$${fmt(r.fill_price)}</td>
+          <td>$${fmt(r.avg_cost)}</td>
+          <td>${r.reason}</td>
+          <td>${r.mode}</td>
+          <td class="${r.realized_pnl>=0?'pos':'neg'}">${fmtUsd(r.realized_pnl)}</td>
+          <td class="${r.cum_pnl>=0?'pos':'neg'}">${fmtUsd(r.cum_pnl)}</td>
+        </tr>
+      `).join('');
+    };
+
+    // sort handlers
+    document.querySelectorAll('th[data-k]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.k;
+        if (sortKey === k) sortDir = (sortDir === 'asc' ? 'desc' : 'asc');
+        else { sortKey = k; sortDir = 'desc'; }
+        render();
+      });
+    });
+document.getElementById('reset').addEventListener('click', async () => {
+  if (!confirm('Reset trade & MTM history? This cannot be undone.')) return;
+  try {
+    const res = await fetch('/api/reset', {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error(await res.text());
+    alert('History reset.'); location.reload();
+  } catch (e) { alert('Reset failed: ' + e.message); }
+});
+    $('#refresh').addEventListener('click', fetchTrades);
+    $('#q').addEventListener('input', render);
+    $('#limit').addEventListener('change', fetchTrades);
+
+    fetchTrades();
+  </script>
+</body>
+</html>
