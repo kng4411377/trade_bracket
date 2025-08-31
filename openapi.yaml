@@ -1,0 +1,386 @@
+openapi: 3.0.3
+info:
+  title: Bracket Manager API
+  version: "1.0.0"
+  description: |
+    Local API for exit-only bracket manager:
+    - Live MTM & realized P/L
+    - Historical trades
+    - Runtime overrides (absolute/percent)
+    - Dry-run toggle
+    - Reset trade history
+servers:
+  - url: http://127.0.0.1:7070
+    description: Local server
+
+tags:
+  - name: Metrics
+  - name: Trades
+  - name: Overrides
+  - name: Control
+  - name: Maintenance
+  - name: UI
+
+paths:
+  /api/mtm:
+    get:
+      tags: [Metrics]
+      summary: Latest MTM snapshot per symbol (merged with realized P/L)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MtmResponse"
+              examples:
+                sample:
+                  value:
+                    ts: "2025-08-30T19:15:00Z"
+                    data:
+                      AAPL:
+                        ts: "2025-08-30T19:14:59Z"
+                        price: 187.54
+                        qty: 5
+                        avg_cost: 182.35
+                        unreal_pnl: 25.95
+                        realized_pnl: 38.12
+                        total_pnl: 64.07
+  /api/mtm_series:
+    get:
+      tags: [Metrics]
+      summary: Rolling MTM series for sparkline
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: { type: string }
+          description: Ticker symbol (e.g. AAPL)
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 10
+            maximum: 2000
+            default: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MtmSeriesResponse"
+              examples:
+                sample:
+                  value:
+                    symbol: AAPL
+                    data:
+                      - { ts: "2025-08-30T19:10:00Z", price: 187.1, unreal_pnl: 24.0 }
+                      - { ts: "2025-08-30T19:15:00Z", price: 187.5, unreal_pnl: 25.9 }
+        "400":
+          description: Missing symbol
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/trades:
+    get:
+      tags: [Trades]
+      summary: Historical trades (realized P/L)
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000
+            default: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradesResponse"
+              examples:
+                sample:
+                  value:
+                    total: 1
+                    data:
+                      - ts: "2025-08-26T18:03:12Z"
+                        session: "6a6e-…"
+                        symbol: "AAPL"
+                        side: "sell"
+                        qty: 5
+                        fill_price: 190.0
+                        avg_cost: 182.35
+                        slippage_bps: 5
+                        fee: 0
+                        reason: "target_hit"
+                        mode: "DRY_RUN"
+                        realized_pnl: 38.123456
+                        cum_pnl: 38.123456
+  /overrides:
+    get:
+      tags: [Overrides]
+      summary: Get current overrides object
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverridesEnvelope"
+              examples:
+                sample:
+                  value:
+                    overrides:
+                      AAPL:
+                        mode: "absolute"
+                        target: 192.5
+                        stop: 178.2
+                        eodClose: true
+                        eodCutoffMin: 10
+                        eodClosePct: 100
+                      MSFT:
+                        mode: "percent"
+                        targetPct: 4
+                        stopPct: 2.5
+  /overrides/{symbol}/absolute:
+    post:
+      tags: [Overrides]
+      summary: Set absolute target/stop for a symbol
+      parameters:
+        - in: path
+          name: symbol
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AbsoluteOverride"
+            examples:
+              sample:
+                value: { target: 192.5, stop: 178.2 }
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverrideAck"
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /overrides/{symbol}/percent:
+    post:
+      tags: [Overrides]
+      summary: Set percent target/stop derived from avg cost
+      parameters:
+        - in: path
+          name: symbol
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PercentOverride"
+            examples:
+              sample:
+                value: { targetPct: 4.0, stopPct: 2.5 }
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverrideAck"
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /control/dry-run:
+    post:
+      tags: [Control]
+      summary: Toggle dry-run mode (no real orders placed/canceled)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun:
+                  type: boolean
+              required: [dryRun]
+            examples:
+              enable:
+                value: { dryRun: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  dryRun: { type: boolean }
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/reset:
+    post:
+      tags: [Maintenance]
+      summary: Reset trade & MTM history (preserves CSV headers)
+      responses:
+        "200":
+          description: Reset done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  reset:
+                    type: array
+                    items: { type: string }
+                    example: ["trades.csv","mtm.csv"]
+
+  # (Optional) Document the UI HTML endpoints
+  /dashboard:
+    get:
+      tags: [UI]
+      summary: Dashboard HTML
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema: { type: string }
+  /trades:
+    get:
+      tags: [UI]
+      summary: Trades table HTML
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema: { type: string }
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    MtmEntry:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        price: { type: number }
+        qty: { type: number }
+        avg_cost: { type: number }
+        unreal_pnl: { type: number }
+        realized_pnl: { type: number, description: "Sum of realized P/L from trades.csv for this symbol" }
+        total_pnl: { type: number, description: "unreal_pnl + realized_pnl" }
+    MtmResponse:
+      type: object
+      properties:
+        ts: { type: string, format: date-time, description: "Server response time" }
+        data:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/MtmEntry"
+    MtmSeriesPoint:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        price: { type: number }
+        unreal_pnl: { type: number }
+    MtmSeriesResponse:
+      type: object
+      properties:
+        symbol: { type: string }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/MtmSeriesPoint" }
+    Trade:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        session: { type: string }
+        symbol: { type: string }
+        side: { type: string, example: sell }
+        qty: { type: number }
+        fill_price: { type: number }
+        avg_cost: { type: number }
+        slippage_bps: { type: number }
+        fee: { type: number }
+        reason: { type: string, example: target_hit }
+        mode: { type: string, example: DRY_RUN, description: "DRY_RUN or LIVE" }
+        realized_pnl: { type: number }
+        cum_pnl: { type: number }
+    TradesResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Trade" }
+    OverridesEnvelope:
+      type: object
+      properties:
+        overrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/OverrideSymbol"
+    OverrideSymbol:
+      type: object
+      description: Per-symbol override block
+      properties:
+        mode:
+          type: string
+          enum: [absolute, percent]
+        # Absolute
+        target: { type: number }
+        stop: { type: number }
+        # Percent (derived from avg cost)
+        targetPct: { type: number }
+        stopPct: { type: number }
+        # EOD options
+        eodClose: { type: boolean }
+        eodCutoffMin: { type: number }
+        eodClosePct: { type: number }
+        # Dry-run offline extras (optional)
+        qty: { type: number }
+        avgCostOverride: { type: number }
+    AbsoluteOverride:
+      type: object
+      required: [target, stop]
+      properties:
+        target: { type: number }
+        stop: { type: number }
+    PercentOverride:
+      type: object
+      required: [targetPct, stopPct]
+      properties:
+        targetPct: { type: number }
+        stopPct: { type: number }
+    OverrideAck:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        symbol: { type: string }
+        overrides: { $ref: "#/components/schemas/OverrideSymbol" }

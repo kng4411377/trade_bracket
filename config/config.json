@@ -2,5 +2,25 @@
   "tickers": [
     { "symbol": "AAPL", "qty": 5, "target": 190.0, "stop": 170.0, "trailPct": 2.0, "timeInForce": "gfd" },
     { "symbol": "MSFT", "qty": 3, "target": 480.0, "stop": 430.0, "timeInForce": "gfd" }
+  ],
+  "cryptoMomentum": [
+    {
+      "pair": "BTC-USD",
+      "thresholdPct": 5.0,
+      "lookbackMinutes": 60,
+      "pollMs": 30000,
+      "order": {
+        "sizeUSD": 100.0,
+        "qty": null,
+        "timeInForce": "gtc",
+        "type": "market"
+      },
+      "postBuyBracket": {
+        "targetPct": 4.0,
+        "stopPct": 2.0,
+        "trailPct": 0
+      },
+      "cooldownMinutes": 180
+    }
   ]
 }

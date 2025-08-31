@@ -26,6 +26,8 @@ export const cfg = {
   rhUser: process.env.RH_USERNAME,
   rhPass: process.env.RH_PASSWORD,
 
+  maxConcurrentCrypto: parseInt(process.env.MAX_CONCURRENT_CRYPTO || '3', 10),
+
   files: {
     overrides: path.join(__dirname, '..', 'config', 'overrides.json'),
     tradesCsv: path.join(__dirname, '..', 'var', 'trades.csv'),

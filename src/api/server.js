@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { cfg } from '../config.js';
 import { consoleLog } from '../utils/logging.js';
+import { fileURLToPath } from 'node:url';
 import { overridesFor } from '../core/overrides.js';
 
 const overridesPath = cfg.files.overrides;
@@ -77,6 +78,10 @@ export const startApi = () => {
 
   // serve static dashboard pages
   app.use(express.static(path.join(process.cwd(), 'public')));
+
+  app.get('/openapi.yaml', (_req, res) => {
+  res.sendFile(path.join(process.cwd(), 'openapi.yaml'));
+});
 
   // ---------- READ-ONLY API (no auth) ----------
   app.get('/api/mtm', (_req, res) => {
