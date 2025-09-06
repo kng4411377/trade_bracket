@@ -1,7 +1,13 @@
 import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import baseConfig from '../config/config.json';
+// Works on Node 22 ESM
+const baseConfig = (
+  await import(new URL("../config/config.json", import.meta.url), {
+    with: { type: "json" }
+  })
+).default;
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

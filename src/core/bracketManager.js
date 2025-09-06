@@ -4,6 +4,71 @@ import { withBackoff } from '../utils/backoff.js';
 import { isMarketOpenNow, minutesToCloseET } from '../utils/time.js';
 import * as RH from '../services/robinhood.js';
 import { overridesFor, computeExits } from './overrides.js';
+import { inc } from '../utils/heartbeat.js';
+// add near the other imports
+import * as RHC from '../services/robinhoodCrypto.js';
+import fs from 'node:fs';
+
+const isCrypto = (sym) => sym.includes('-'); // e.g., BTC-USD
+
+// Quote router
+const getMark = async (symbol) =>
+  isCrypto(symbol) ? RHC.getCryptoQuote(symbol) : RH.getQuote(symbol);
+
+// Best-effort positions router
+// - Stocks: use RH.qtyAndAvgCost (unchanged)
+// - Crypto: we often can’t query holdings via stock endpoints. We’ll try, else return {qty:0, avgCost:NaN}
+const qtyAndAvgCostAny = async (symbol) => {
+  if (!isCrypto(symbol)) return RH.qtyAndAvgCost(symbol);
+  try { return await RH.qtyAndAvgCost(symbol); } catch {}
+  return { qty: 0, avgCost: NaN };
+};
+
+// No-op canceller for crypto unless you later add it to RHC
+const cancelStaleOpenOrdersAny = async (symbol) => {
+  if (isCrypto(symbol)) return 0;
+  return cancelStaleOpenOrders(symbol);
+};
+
+// SELL routers
+const placeSellLimitAny = async ({ symbol, qty, limitPrice, tif='gfd' }, dryRun, loggers) => {
+  if (!isCrypto(symbol)) {
+    return RH.placeSellLimit({ symbol, qty, limitPrice, tif }, dryRun, loggers);
+  }
+  if (dryRun) {
+    const { consoleLog: c, fileLog: f } = loggers;
+    c.info({ symbol, qty, limitPrice, tif }, '[DRY RUN] Would place LIMIT sell (CRYPTO)');
+    f.info({ symbol, qty, limitPrice, tif }, '[DRY RUN] Would place LIMIT sell (CRYPTO)');
+    return { id: 'dry-run-crypto-limit' };
+  }
+  // REAL mode crypto sell requires functions you haven’t implemented yet
+  throw new Error('Crypto limit sell not implemented. Add placeLimitSellCrypto() in robinhoodCrypto.js');
+};
+
+const placeSellMarketAny = async ({ symbol, qty, tif='gfd' }, dryRun, loggers) => {
+  if (!isCrypto(symbol)) {
+    return RH.placeSellMarket({ symbol, qty, tif }, dryRun, loggers);
+  }
+  if (dryRun) {
+    const { consoleLog: c, fileLog: f } = loggers;
+    c.info({ symbol, qty, tif }, '[DRY RUN] Would place MARKET sell (CRYPTO)');
+    f.info({ symbol, qty, tif }, '[DRY RUN] Would place MARKET sell (CRYPTO)');
+    return { id: 'dry-run-crypto-market' };
+  }
+  // REAL mode crypto sell requires functions you haven’t implemented yet
+  throw new Error('Crypto market sell not implemented. Add placeMarketSellCrypto() in robinhoodCrypto.js');
+};
+
+// Helper: persist an avgCost into overrides when we can’t read it for crypto
+const upsertOverridePatch = (symbol, patch) => {
+  try {
+    const path = cfg.files.overrides;
+    const cur = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, 'utf8') || '{}') : {};
+    cur[symbol] = { ...(cur[symbol] || {}), ...patch };
+    fs.writeFileSync(path, JSON.stringify(cur, null, 2), 'utf8');
+  } catch { /* ignore */ }
+};
+
 
 const state = new Map(); // symbol -> { closed, reason, maxPrice }
 
@@ -56,11 +121,24 @@ export const handleTicker = async t => {
   const { symbol, qty, target, stop, timeInForce='gfd', trailPct } = t;
   if (isClosed(symbol)) return;
   if (cfg.marketHoursOnly && !isMarketOpenNow()) return;
+consoleLog.debug({ at: new Date().toISOString(), symbol }, '[STOCK] poll start');
+inc('stock');
 
   try {
-    const price = await withBackoff(() => RH.getQuote(symbol), `quote:${symbol}`);
-    const { qty: held, avgCost } = await RH.qtyAndAvgCost(symbol);
+const price = await withBackoff(() => getMark(symbol), `quote:${symbol}`);
+    let { qty: held, avgCost } = await qtyAndAvgCostAny(symbol);
 
+    // If crypto and we can’t read avgCost, seed it once from the first observed price (so percent exits work)
+    if (isCrypto(symbol) && (!Number.isFinite(avgCost) || avgCost <= 0)) {
+      const ovr = overridesFor(symbol) || {};
+      if (Number.isFinite(ovr.avgCost) && ovr.avgCost > 0) {
+        avgCost = ovr.avgCost;
+      } else {
+        avgCost = price;
+        upsertOverridePatch(symbol, { avgCost }); // remember for next ticks
+        consoleLog.info({ symbol, avgCost }, '[CRYPTO] Seeded avgCost from mark');
+      }
+    }
     if (held > 0) {
       appendCsv(cfg.files.mtmCsv, [
         new Date().toISOString(), session, symbol, f6(price), f6(held), f6(avgCost), f6((price - avgCost) * held)
@@ -74,19 +152,17 @@ export const handleTicker = async t => {
     const eodPct = (ovr.eodClosePct ?? cfg.eodClosePartialPct);
     const m2c = minutesToCloseET();
 
-    if (eodEnabled && m2c >= 0 && m2c <= eodCutoff && held > 0) {
+   const allowEod = isCrypto(symbol) ? Boolean(ovr?.eodCloseForCrypto) : eodEnabled;
+    if (allowEod && m2c >= 0 && m2c <= eodCutoff && held > 0) {
       const closeQty = Math.floor(held * (eodPct / 100));
       if (closeQty > 0) {
-        try { await cancelStaleOpenOrders(symbol); } catch {}
+try { await cancelStaleOpenOrdersAny(symbol); } catch {}
         if (cfg.dryRun) {
           logDryRunExit({ symbol, qty: closeQty, rawFill: price, avgCost, reason: 'eod_closeout' });
           if (closeQty === held) markClosed(symbol, 'eod_closeout');
           return;
         } else {
-          const res = await withBackoff(
-            () => RH.placeSellMarket({ symbol, qty: closeQty, tif: timeInForce }, false, { consoleLog, fileLog }),
-            `eodSell:${symbol}`
-          );
+          const res = await withBackoff(() => placeSellMarketAny({ symbol, qty: closeQty, tif: timeInForce }, false, { consoleLog, fileLog }), `eodSell:${symbol}`);
           consoleLog.info({ symbol, closeQty, orderId: res.id }, 'EOD market sell placed');
           fileLog.info({ symbol, closeQty, orderId: res.id }, 'EOD market sell placed');
           if (closeQty === held) markClosed(symbol, 'eod_closeout');

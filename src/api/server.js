@@ -4,10 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { cfg } from '../config.js';
 import { consoleLog } from '../utils/logging.js';
+import { openPosition as dryOpen, closePosition as dryClose, listPositions as dryPositions, journal as dryJournal } from '../services/brokerDry.js';
 import { fileURLToPath } from 'node:url';
 import { overridesFor } from '../core/overrides.js';
 
 const overridesPath = cfg.files.overrides;
+const isDry = () => (globalThis.__DRY_RUN__ ?? cfg.dryRun) === true;
+
 
 const loadOverrides = () => { try { return JSON.parse(fs.readFileSync(overridesPath, 'utf8')); } catch { return {}; } };
 const saveOverrides = obj => fs.writeFileSync(overridesPath, JSON.stringify(obj, null, 2), 'utf8');
@@ -173,6 +176,51 @@ app.post('/api/reset', (_req, res) => {
   );
   return res.json({ ok: true, reset: ['trades.csv', 'mtm.csv'] });
 });
+  // ---------- DRY-RUN TRADING API ----------
+  if (isDry()) {
+    consoleLog.info('Dry-run mode detected: enabling /api/dry routes');
+
+    // POST /api/dry/open  {symbol, qty, price, note?}
+    app.post('/api/dry/open', async (req, res) => {
+      try {
+        const { symbol, qty, price, note } = req.body || {};
+        if (!symbol || !isFinite(qty) || !isFinite(price)) {
+          return res.status(400).json({ error: 'symbol, qty, price are required' });
+        }
+        const result = await dryOpen({ symbol, qty: Number(qty), price: Number(price), note });
+        return res.json(result);
+      } catch (e) {
+        return res.status(500).json({ error: e.message });
+      }
+    });
+
+    // POST /api/dry/close {symbol, qty, price, note?}
+    app.post('/api/dry/close', async (req, res) => {
+      try {
+        const { symbol, qty, price, note } = req.body || {};
+        if (!symbol || !isFinite(qty) || !isFinite(price)) {
+          return res.status(400).json({ error: 'symbol, qty, price are required' });
+        }
+        const result = await dryClose({ symbol, qty: Number(qty), price: Number(price), note });
+        return res.json(result);
+      } catch (e) {
+        return res.status(500).json({ error: e.message });
+      }
+    });
+
+    // GET /api/dry/positions
+    app.get('/api/dry/positions', async (_req, res) => {
+      const pos = await dryPositions();
+      return res.json(pos);
+    });
+
+    // GET /api/dry/journal
+    app.get('/api/dry/journal', async (_req, res) => {
+      const j = await dryJournal();
+      return res.json(j);
+    });
+  }
+
   app.listen(cfg.apiPort, cfg.apiHost, () => {
     consoleLog.info({ host: cfg.apiHost, port: cfg.apiPort }, 'Control API + Dashboard listening');
   });
