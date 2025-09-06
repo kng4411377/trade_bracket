@@ -8,17 +8,21 @@ import { inc } from '../utils/heartbeat.js';
 // add near the other imports
 import * as RHC from '../services/robinhoodCrypto.js';
 import fs from 'node:fs';
-import { withScope } from '../utils/logging.mjs';
-import { getCryptoPosition } from '../utils/positions.mjs';
-import { loadConfig } from '../utils/config.mjs';
+import { withScope } from '../utils/logging.js';
+import { getCryptoPosition } from '../utils/positions.js';
+import { loadConfig } from '../utils/config.js';
 
 const log = withScope('bracket');
 
 async function sellCryptoMarket(RH, pair, qty) {
+  if (!qty || qty <= 0) return;
   return RH.crypto.sellMarket({ symbol: pair, quantity: qty });
 }
-async function sellCryptoLimit(RH, pair, qty, price) {
-  return RH.crypto.sellLimit({ symbol: pair, quantity: qty, price, timeInForce: 'gtc' });
+
+async function sellCryptoLimit(RH, pair, qty, limitPrice) {
+  if (!qty || qty <= 0) return;
+  if (!limitPrice || limitPrice <= 0) throw new Error('Invalid limit price');
+  return RH.crypto.sellLimit({ symbol: pair, quantity: qty, price: limitPrice, timeInForce: 'gtc' });
 }
 
 export async function manage(RH, symbol, prices) {
@@ -258,17 +262,6 @@ try { await cancelStaleOpenOrdersAny(symbol); } catch {}
     fileLog.error({ symbol, err: err.message }, 'Ticker loop error');
   }
 };
-
-async function sellCryptoMarket(RH, pair, qty) {
-  if (!qty || qty <= 0) return;
-  return RH.crypto.sellMarket({ symbol: pair, quantity: qty });
-}
-
-async function sellCryptoLimit(RH, pair, qty, limitPrice) {
-  if (!qty || qty <= 0) return;
-  if (!limitPrice || limitPrice <= 0) throw new Error('Invalid limit price');
-  return RH.crypto.sellLimit({ symbol: pair, quantity: qty, price: limitPrice, timeInForce: 'gtc' });
-}
 
 
 export const startManager = tickers => {
