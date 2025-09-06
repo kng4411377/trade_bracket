@@ -3,7 +3,11 @@ import path from 'node:path';
 import pino from 'pino';
 import { randomUUID } from 'node:crypto';
 import { cfg } from '../config.js';
+export const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
+export function withScope(scope) {
+  return logger.child({ scope });
+}
 export const session = randomUUID();
 
 const ensureDir = p => fs.mkdirSync(path.dirname(p), { recursive: true });

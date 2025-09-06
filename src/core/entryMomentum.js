@@ -4,6 +4,50 @@ import { withBackoff } from '../utils/backoff.js';
 import * as RHC from '../services/robinhoodCrypto.js';
 import fs from 'node:fs';
 import * as RH from '../services/robinhood.js'; // to query qty when we can
+import { getCryptoPosition } from '../utils/positions.js';
+import { withScope } from '../utils/logging.js';
+import { loadConfig } from '../utils/config.js';
+import { getCryptoPosition } from '../utils/positions.js';
+// entryMomentum.js
+async function countActivePairs(RH, pairs) {
+  const results = await Promise.all(pairs.map(p => isPairActive(RH, p)));
+  return results.filter(Boolean).length;
+}
+
+
+const log = withScope('entryMomentum');
+
+export async function runMomentum(RH) {
+  const cfg = await loadConfig();
+  const rules = cfg.cryptoMomentum ?? [];
+  if (!Array.isArray(rules) || rules.length === 0) {
+    log.debug('No cryptoMomentum rules configured'); 
+    return;
+  }
+
+  // Enforce concurrency cap
+  const pairs = rules.map(r => r.pair);
+  const activeCount = (await Promise.all(pairs.map(p => getCryptoPosition(RH, p).then(x => x.qty > 0)))).filter(Boolean).length;
+  if (activeCount >= (cfg.runtime.maxConcurrentCrypto ?? 3)) {
+    log.info({ activeCount }, 'Max concurrent crypto positions reached');
+    return;
+  }
+
+  // Loop rules in parallel (bounded if desired)
+  await Promise.all(rules.map(async r => {
+    const pollMs = r.pollMs ?? cfg.runtime.pollMs;
+    const cooldown = r.cooldownMinutes ?? cfg.runtime.cooldownMinutes;
+
+    try {
+      // your existing momentum calc here...
+      // if trigger => place buy and then set bracket
+    } catch (err) {
+      log.error({ err, pair: r.pair }, 'Momentum rule failed');
+    } finally {
+      await new Promise(res => setTimeout(res, pollMs));
+    }
+  }));
+}
 
 // track “active” momentum positions by pair (in-memory safety net)
 const activePairs = new Set();
@@ -11,7 +55,7 @@ const activePairs = new Set();
 const isPairActive = async (pair) => {
   // Prefer truth from Robinhood if it returns crypto qty; otherwise fall back to memory flag.
   try {
-    const { qty } = await RH.qtyAndAvgCost(pair);
+    const { qty, avgCost } = await getCryptoPosition(RH, pair);
     if (Number.isFinite(qty) && qty > 0) {
       activePairs.add(pair);
       return true;

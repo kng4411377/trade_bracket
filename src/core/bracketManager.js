@@ -8,6 +8,46 @@ import { inc } from '../utils/heartbeat.js';
 // add near the other imports
 import * as RHC from '../services/robinhoodCrypto.js';
 import fs from 'node:fs';
+import { withScope } from '../utils/logging.mjs';
+import { getCryptoPosition } from '../utils/positions.mjs';
+import { loadConfig } from '../utils/config.mjs';
+
+const log = withScope('bracket');
+
+async function sellCryptoMarket(RH, pair, qty) {
+  return RH.crypto.sellMarket({ symbol: pair, quantity: qty });
+}
+async function sellCryptoLimit(RH, pair, qty, price) {
+  return RH.crypto.sellLimit({ symbol: pair, quantity: qty, price, timeInForce: 'gtc' });
+}
+
+export async function manage(RH, symbol, prices) {
+  const cfg = await loadConfig();
+  const gateByHours = cfg.runtime.marketHoursOnly && !isCrypto(symbol);
+  if (gateByHours) {
+    // if it's outside equity hours, skip
+  }
+
+  try {
+    if (isCrypto(symbol)) {
+      const { qty } = await getCryptoPosition(RH, symbol);
+      // ... decide exits and call sellCryptoMarket/sellCryptoLimit accordingly
+    } else {
+      // existing equity flow
+    }
+  } catch (err) {
+    log.error({ err, symbol }, 'Bracket manage failed');
+  }
+}
+
+// EOD
+export async function eodSweep(RH, symbols) {
+  const cfg = await loadConfig();
+  for (const s of symbols) {
+    if (isCrypto(s) && !cfg.runtime.eodCloseForCrypto) continue;
+    // otherwise perform EOD close for equity or when explicitly enabled for crypto
+  }
+}
 
 const isCrypto = (sym) => sym.includes('-'); // e.g., BTC-USD
 
@@ -116,11 +156,16 @@ const cancelStaleOpenOrders = async symbol => {
   }
   return n;
 };
+function isCryptoSymbol(sym) { return sym.includes('-USD'); } // adjust if needed
+
+function shouldGateByHours(symbol) {
+  return cfg.marketHoursOnly && !isCryptoSymbol(symbol);
+}
 
 export const handleTicker = async t => {
   const { symbol, qty, target, stop, timeInForce='gfd', trailPct } = t;
   if (isClosed(symbol)) return;
-  if (cfg.marketHoursOnly && !isMarketOpenNow()) return;
+  if (shouldGateByHours(symbol) && !isMarketOpenNow()) return;
 consoleLog.debug({ at: new Date().toISOString(), symbol }, '[STOCK] poll start');
 inc('stock');
 
@@ -213,6 +258,18 @@ try { await cancelStaleOpenOrdersAny(symbol); } catch {}
     fileLog.error({ symbol, err: err.message }, 'Ticker loop error');
   }
 };
+
+async function sellCryptoMarket(RH, pair, qty) {
+  if (!qty || qty <= 0) return;
+  return RH.crypto.sellMarket({ symbol: pair, quantity: qty });
+}
+
+async function sellCryptoLimit(RH, pair, qty, limitPrice) {
+  if (!qty || qty <= 0) return;
+  if (!limitPrice || limitPrice <= 0) throw new Error('Invalid limit price');
+  return RH.crypto.sellLimit({ symbol: pair, quantity: qty, price: limitPrice, timeInForce: 'gtc' });
+}
+
 
 export const startManager = tickers => {
   // immediate tick
