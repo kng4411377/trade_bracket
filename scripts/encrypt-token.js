@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { encryptWithPassword } from "../utils/secret.js";
+import { encryptWithPassword } from "../src/utils/secret.js";
 
 function arg(name) {
   const hit = process.argv.find(a => a.startsWith(`--${name}=`));

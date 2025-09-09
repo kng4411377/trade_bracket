@@ -1,6 +1,6 @@
-import { withScope } from "../../utils/logging.js";
-import { loadConfig } from "../../utils/config.js";
-import { readJsonSafe, writeJsonAtomic, withLock } from "../../utils/atomicFile.js";
+import { withScope } from "../utils/logging.js";
+import { loadConfig } from "../utils/config.js";
+import { readJsonSafe, writeJsonAtomic, withLock } from "../utils/atomicFile.js";
 
 const log = withScope("overrides");
 

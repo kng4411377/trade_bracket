@@ -1,4 +1,3 @@
-import { cfg } from '../config.js';
 import { withBackoff } from '../utils/backoff.js';
 import crypto from 'node:crypto';
 
