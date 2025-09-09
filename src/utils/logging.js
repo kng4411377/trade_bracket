@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 import { randomUUID } from 'node:crypto';
-import { cfg } from '../config.js';
+import { loadConfig } from '../utils/config.js';
+const cfg = await loadConfig();
 export const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 export function withScope(scope) {

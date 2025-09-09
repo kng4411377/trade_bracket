@@ -1,10 +1,12 @@
-import { cfg } from './config.js';
+import { loadConfig } from './utils/config.js';
 import { consoleLog, fileLog, session } from './utils/logging.js';
 import { startApi } from './api/server.js';
-import { watchOverrides } from './core/overrides.js';
 import * as RH from './services/robinhood.js';
-import { startManager } from './core/bracketManager.js';
+import { startManager } from './bracketManager.js';
 import { getAndReset } from './utils/heartbeat.js';
+
+  const cfg = await loadConfig();
+
 consoleLog.info({
   session,
   dryRun: cfg.dryRun,
@@ -15,7 +17,6 @@ consoleLog.info({
 await RH.login();
 consoleLog.info('Logged into Robinhood.'); fileLog.info('Logged into Robinhood.');
 
-watchOverrides();
 startApi();
 
 const stop = startManager(cfg.tickers);

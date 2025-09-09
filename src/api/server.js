@@ -2,18 +2,13 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { cfg } from '../config.js';
+import { loadConfig } from '../utils/config.js';
 import { consoleLog } from '../utils/logging.js';
 import { openPosition as dryOpen, closePosition as dryClose, listPositions as dryPositions, journal as dryJournal } from '../services/brokerDry.js';
+import { setPercent,setAbsolute } from './overridesHandlers.js';
 import { fileURLToPath } from 'node:url';
-import { overridesFor } from '../core/overrides.js';
-
-const overridesPath = cfg.files.overrides;
+const cfg = await loadConfig();
 const isDry = () => (globalThis.__DRY_RUN__ ?? cfg.dryRun) === true;
-
-
-const loadOverrides = () => { try { return JSON.parse(fs.readFileSync(overridesPath, 'utf8')); } catch { return {}; } };
-const saveOverrides = obj => fs.writeFileSync(overridesPath, JSON.stringify(obj, null, 2), 'utf8');
 
 // ---- helpers to parse CSVs (simple, robust enough for our headers) ----
 const parseCsv = (file) => {
@@ -128,19 +123,10 @@ export const startApi = () => {
   // ---------- MUTATING API (protected) ----------
   app.get('/overrides', (_req, res) => res.json({ overrides: loadOverrides() }));
 
-  app.post('/overrides/:symbol/absolute', (req, res) => {
-    const { symbol } = req.params; const { target, stop } = req.body || {};
-    if (!isFinite(target) || !isFinite(stop)) return res.status(400).json({ error: 'target & stop required' });
-    const cur = loadOverrides(); cur[symbol] = { ...(cur[symbol]||{}), mode:'absolute', target:+target, stop:+stop };
-    saveOverrides(cur); return res.json({ ok: true, symbol, overrides: cur[symbol] });
-  });
+ // Atomic overrides routes
+app.post('/overrides/:symbol/percent', express.json(), setPercent);
+app.post('/overrides/:symbol/absolute', express.json(), setAbsolute);
 
-  app.post('/overrides/:symbol/percent', (req, res) => {
-    const { symbol } = req.params; const { targetPct, stopPct } = req.body || {};
-    if (!isFinite(targetPct) || !isFinite(stopPct)) return res.status(400).json({ error: 'targetPct & stopPct required' });
-    const cur = loadOverrides(); cur[symbol] = { ...(cur[symbol]||{}), mode:'percent', targetPct:+targetPct, stopPct:+stopPct };
-    saveOverrides(cur); return res.json({ ok: true, symbol, overrides: cur[symbol] });
-  });
 
   app.post('/control/dry-run', (req, res) => {
     const { dryRun } = req.body || {};

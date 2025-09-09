@@ -4,9 +4,9 @@ const require = createRequire(import.meta.url);
 const RobinhoodFactory = require("robinhood-node");
 
 import { withBackoff } from "../utils/backoff.js";
-import { cfg } from "../config.js";
+import { loadConfig } from "../utils/config.js";
 import { logger } from "../utils/logging.js";
-
+const cfg = await loadConfig();
 let RH;
 
 export const login = () =>

@@ -3,7 +3,12 @@ import path from 'node:path';
 
 const DEFAULTS = {
   cryptoMomentum: [],
-  files: { overrides: 'config/overrides.json' },
+   files: {
+    overrides: 'config/overrides.json',
+    tradesCsv: 'var/trades.csv',      // <-- add this
+    mtmCsv: 'var/mtm.csv',            // <-- add this
+    logFile: 'var/app.log'            // <-- add this
+  },
   runtime: {
     pollMs: 30000,
     cooldownMinutes: 180,
