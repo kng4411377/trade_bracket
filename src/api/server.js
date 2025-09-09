@@ -1,12 +1,13 @@
 // src/api/server.js
+import { readJsonSafe } from '../utils/atomicFile.js';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../utils/config.js';
 import { consoleLog } from '../utils/logging.js';
 import { openPosition as dryOpen, closePosition as dryClose, listPositions as dryPositions, journal as dryJournal } from '../services/brokerDry.js';
-import { setPercent,setAbsolute } from './overridesHandlers.js';
-import { fileURLToPath } from 'node:url';
+import { setPercent, setAbsolute } from './overridesHandlers.js';
+
 const cfg = await loadConfig();
 const isDry = () => (globalThis.__DRY_RUN__ ?? cfg.dryRun) === true;
 
@@ -28,7 +29,7 @@ const parseCsv = (file) => {
 const mtmSeries = (symbol, limit = 200) => {
   const rows = parseCsv(cfg.files.mtmCsv)
     .filter(r => r.symbol === symbol)
-    .sort((a,b) => (a.ts < b.ts ? -1 : 1)); // oldest -> newest
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1)); // oldest -> newest
   if (rows.length > limit) return rows.slice(rows.length - limit);
   return rows;
 };
@@ -78,8 +79,8 @@ export const startApi = () => {
   app.use(express.static(path.join(process.cwd(), 'public')));
 
   app.get('/openapi.yaml', (_req, res) => {
-  res.sendFile(path.join(process.cwd(), 'openapi.yaml'));
-});
+    res.sendFile(path.join(process.cwd(), 'openapi.yaml'));
+  });
 
   // ---------- READ-ONLY API (no auth) ----------
   app.get('/api/mtm', (_req, res) => {
@@ -89,7 +90,8 @@ export const startApi = () => {
     const payload = Object.fromEntries(
       Object.entries(latest).map(([sym, v]) => ([
         sym,
-        { ...v,
+        {
+          ...v,
           price: Number(v.price),
           qty: Number(v.qty),
           avg_cost: Number(v.avg_cost),
@@ -121,11 +123,15 @@ export const startApi = () => {
   });
 
   // ---------- MUTATING API (protected) ----------
-  app.get('/overrides', (_req, res) => res.json({ overrides: loadOverrides() }));
+  app.get('/overrides', async (_req, res) => {
+    const data = await readJsonSafe(cfg.files.overrides);
+    res.json({ overrides: data });
+  });
 
- // Atomic overrides routes
-app.post('/overrides/:symbol/percent', express.json(), setPercent);
-app.post('/overrides/:symbol/absolute', express.json(), setAbsolute);
+
+  // Atomic overrides routes
+  app.post('/overrides/:symbol/percent', express.json(), setPercent);
+  app.post('/overrides/:symbol/absolute', express.json(), setAbsolute);
 
 
   app.post('/control/dry-run', (req, res) => {
@@ -140,28 +146,28 @@ app.post('/overrides/:symbol/absolute', express.json(), setAbsolute);
   app.get('/trades', (_req, res) => res.redirect('/trades.html'));
 
   // Rolling series for a symbol (for sparklines)
-app.get('/api/mtm_series', (req, res) => {
-  const symbol = String(req.query.symbol || '').toUpperCase();
-  const limit = Math.max(10, Math.min(2000, Number(req.query.limit || 200)));
-  if (!symbol) return res.status(400).json({ error: 'symbol required' });
-  const rows = mtmSeries(symbol, limit).map(r => ({
-    ts: r.ts, price: Number(r.price), unreal_pnl: Number(r.unreal_pnl)
-  }));
-  res.json({ symbol, data: rows });
-});
+  app.get('/api/mtm_series', (req, res) => {
+    const symbol = String(req.query.symbol || '').toUpperCase();
+    const limit = Math.max(10, Math.min(2000, Number(req.query.limit || 200)));
+    if (!symbol) return res.status(400).json({ error: 'symbol required' });
+    const rows = mtmSeries(symbol, limit).map(r => ({
+      ts: r.ts, price: Number(r.price), unreal_pnl: Number(r.unreal_pnl)
+    }));
+    res.json({ symbol, data: rows });
+  });
 
-// Reset trade history (protected)
-app.post('/api/reset', (_req, res) => {
-  resetCsvWithHeader(
-    cfg.files.tradesCsv,
-    'ts,session,symbol,side,qty,fill_price,avg_cost,slippage_bps,fee,reason,mode,realized_pnl,cum_pnl'
-  );
-  resetCsvWithHeader(
-    cfg.files.mtmCsv,
-    'ts,session,symbol,price,qty,avg_cost,unreal_pnl'
-  );
-  return res.json({ ok: true, reset: ['trades.csv', 'mtm.csv'] });
-});
+  // Reset trade history (protected)
+  app.post('/api/reset', (_req, res) => {
+    resetCsvWithHeader(
+      cfg.files.tradesCsv,
+      'ts,session,symbol,side,qty,fill_price,avg_cost,slippage_bps,fee,reason,mode,realized_pnl,cum_pnl'
+    );
+    resetCsvWithHeader(
+      cfg.files.mtmCsv,
+      'ts,session,symbol,price,qty,avg_cost,unreal_pnl'
+    );
+    return res.json({ ok: true, reset: ['trades.csv', 'mtm.csv'] });
+  });
   // ---------- DRY-RUN TRADING API ----------
   if (isDry()) {
     consoleLog.info('Dry-run mode detected: enabling /api/dry routes');

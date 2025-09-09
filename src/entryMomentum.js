@@ -1,7 +1,7 @@
-import { withScope } from "../utils/logging.js";
-import { loadConfig } from "../utils/config.js";
-import { getCryptoPosition } from "../utils/positions.js";
-import { tryOrWarn } from "../utils/tryWrap.js";
+import { withScope } from "../src/utils/logging.js";
+import { loadConfig } from "../src/utils/config.js";
+import { getCryptoPosition } from "../src/utils/positions.js";
+import { tryOrWarn } from "../src/utils/tryWrap.js";
 
 const log = withScope("momentum");
 
